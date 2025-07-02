@@ -4,7 +4,7 @@ import numpy as np
 import pymc as pm
 import scipy.stats as sp
 from scipy.special import logsumexp
-#from prefect import flow, task, unmapped
+from prefect import flow, task, unmapped
 
 T=TypeVar("T")
 
@@ -90,11 +90,11 @@ class BootstrapDistribution[T](Distribution[T]):
     def __repr__(self):
         return f"BootstrapDistribution(data={self.data}, sample_size={self.sample_size})"
 
-
+@task
 def bootstrap_distribution(data: Information[T], sample_size: int | None = None) -> Distribution:
     return BootstrapDistribution(data, sample_size)
 
-
+@task
 def simple_linreg(data: Information[T], sigma: float) -> Distribution:
     """
     y = alpha * X + epsilon, where epsilon ~ Normal(0, sigma^2) 
@@ -170,7 +170,7 @@ class MixtureDistribution[T](Distribution[T]):
         return f"MixtureDistribution(components={self.components}, weights={self.weights})"
 
 
-
+@task
 def robust_regression(data: Information[T], sigma: float, dof: float) -> Distribution:
     """
     Implements robust regression using a Student's t-distributed noise model:
@@ -214,7 +214,7 @@ def robust_regression(data: Information[T], sigma: float, dof: float) -> Distrib
     return NormalDistribution(post_mean, post_std)
 
 
-
+@flow
 def bayesbag_linreg(
     data: Information[T], 
     sigma: float, 

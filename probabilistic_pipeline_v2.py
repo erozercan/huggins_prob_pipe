@@ -228,7 +228,7 @@ def bayesbag_linreg(
     return joint_distribution
 
 
-
+@flow
 def bayesbag_regression(
     data: Information,
     model_func: Callable[[Information[T]], Distribution],

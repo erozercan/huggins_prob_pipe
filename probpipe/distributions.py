@@ -89,15 +89,9 @@ class BootstrapDistribution[T](Distribution[T]):
 
     def log_prob(self, data: float) -> float:
         """
-        For an empirical bootstrap distribution, we can't assign proper log_prob.
-        Return uniform log probability over data within range, else -inf.
+        Raise NotImplementedError for now.
         """
-        data_min = np.min(self.data)
-        data_max = np.max(self.data)
-        if data_min <= data <= data_max:
-            return -np.log(len(self.data))  # uniform over empirical data points approx
-        else:
-            return float('-inf')
+        raise NotImplementedError("boostrap distribution log_prob not implemented")
 
     def expectation(self, func: Callable[[float], float]) -> 'Distribution':
         """

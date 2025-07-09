@@ -101,19 +101,11 @@ class NormalDistribution(Distribution[np.ndarray]):
         return BootstrapDistribution(estimates)
 
 
-def bootstrap_distribution(
-    data: Union[List[T], np.ndarray],
-    sample_size: Union[float, int, None] = None,
-    axis: int = 0
-) -> 'BootstrapDistribution':
-    return BootstrapDistribution(data, sample_size, axis)
-
-
 class BootstrapDistribution(Distribution[np.ndarray]):
     def __init__(
         self,
-        data: Union[List[float], np.ndarray],
-        sample_size: Union[float, int, None] = None,
+        data: list[float] | np.ndarray,
+        sample_size: float | int | None = None,
         axis: int = 0
     ):
         # Store data as numpy array
@@ -126,12 +118,12 @@ class BootstrapDistribution(Distribution[np.ndarray]):
         elif isinstance(sample_size, float) and 0 < sample_size < 1:
             # If fraction, take fraction of data length
             self.sample_size = int(sample_size * (self.data.shape[axis] if self.data.ndim > 0 else len(self.data)))
-        elif isinstance(sample_size, int):
+        elif isinstance(sample_size, int) and sample_size >= 1:
             self.sample_size = sample_size
         else:
             raise ValueError("sample_size must be None, float between 0 and 1, or int >= 1")
 
-    def sample(self, n_samples: int) -> List[float]:
+    def sample(self, n_samples: int) -> list[float]:
         """
         Draw n_samples bootstrap samples (with replacement) from the stored data.
         Returns a list of scalar bootstrap samples (averages).
@@ -153,15 +145,9 @@ class BootstrapDistribution(Distribution[np.ndarray]):
 
     def log_prob(self, data: float) -> float:
         """
-        For an empirical bootstrap distribution, we can't assign proper log_prob.
-        Return uniform log probability over data within range, else -inf.
+        Raise NotImplementedError for now.
         """
-        data_min = np.min(self.data)
-        data_max = np.max(self.data)
-        if data_min <= data <= data_max:
-            return -np.log(len(self.data))  # uniform over empirical data points approx
-        else:
-            return float('-inf')
+        raise NotImplementedError("bootstrap distribution log_prob not implemented") 
 
     def expectation(self, func: Callable[[float], float]) -> 'Distribution':
         """

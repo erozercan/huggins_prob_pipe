@@ -10,13 +10,13 @@ from prefect import flow, task, unmapped
 
 T=TypeVar("T")
 
-class Information[T]:
-    def __init__(self, data: T | None = None, metadata: T | None = None):
-        self.data = data
-        self.metadata = metadata if metadata is not None else {}
-
-    def __repr__(self):
-        return f"Information(data={self.data}, metadata={self.metadata})"
+#class Information[T]:
+#    def __init__(self, data: T | None = None, metadata: T | None = None):
+#        self.data = data
+#        self.metadata = metadata if metadata is not None else {}
+#
+#    def __repr__(self):
+#        return f"Information(data={self.data}, metadata={self.metadata})"
 
 
 class Distribution[T](ABC):

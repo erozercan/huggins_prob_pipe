@@ -1,34 +1,30 @@
-from typing import Generic, TypeVar, Optional, Dict, Any, List, Callable, Mapping
+from typing import Generic, TypeVar, Optional, Dict, Any, List, Callable, Mapping, Union
 from abc import ABC, abstractmethod
 import numpy as np
 import pymc as pm
 import scipy.stats as sp
 from scipy.special import logsumexp
 from scipy.stats import bootstrap
+from numpy.typing import NDArray
 
 
-T = TypeVar('T')
+#T = TypeVar('T')
 
-class Information[T]:
-    def __init__(self, data: T | None = None, metadata: T | None = None):
-        self.data = data
-        self.metadata = metadata if metadata is not None else {}
-
-    def __repr__(self):
-        return f"Information(data={self.data}, metadata={self.metadata})"
-
-
-from typing import Generic, TypeVar, Callable, List, Union
-from abc import ABC, abstractmethod
-import numpy as np
-import scipy.stats as sp
-
-T = TypeVar('T')
+#class Information[T]:
+#    def __init__(self, data: T | None = None, metadata: T | None = None):
+#        self.data = data
+#        self.metadata = metadata if metadata is not None else {}
+#
+#    def __repr__(self):
+#        return f"Information(data={self.data}, metadata={self.metadata})"
 
 
-class Distribution(Generic[T], ABC):
+T = TypeVar("T")
+
+
+class Distribution[T](ABC):
     @abstractmethod
-    def sample(self, n_samples: int) -> List[T]:
+    def sample(self, n_samples: int) -> NDArray[T]:
         """
         Sample n_samples items from the distribution.
         Returns a list of sampled raw data.
@@ -36,7 +32,7 @@ class Distribution(Generic[T], ABC):
         raise NotImplementedError("This method should be implemented by subclasses")
 
     @abstractmethod
-    def log_prob(self, data: T) -> float:
+    def log_prob(self, data: NDArray) -> float:
         """
         Compute the log probability of the given raw data.
         """
@@ -49,17 +45,77 @@ class Distribution(Generic[T], ABC):
         """
         raise NotImplementedError("This method should be implemented by subclasses")
 
+class BootstrapDistribution[T](Distribution[T]):
+    def __init__(
+        self,
+        data: NDArray,
+        sample_size: float | int | None = None,
+        axis: int = 0
+    ):
+        # Store data as numpy array
+        self.data = np.array(data)
+        self.axis = axis
 
-class NormalDistribution(Distribution[np.ndarray]):
+        if sample_size is None:
+            # Default to same size as data along axis
+            self.sample_size = self.data.shape[axis] if self.data.ndim > 0 else len(self.data)
+        elif isinstance(sample_size, float) and 0 < sample_size < 1:
+            # If fraction, take fraction of data length
+            self.sample_size = int(sample_size * (self.data.shape[axis] if self.data.ndim > 0 else len(self.data)))
+        elif isinstance(sample_size, int):
+            self.sample_size = sample_size
+        else:
+            raise ValueError("sample_size must be None, float between 0 and 1, or int >= 1")
+
+    def sample(self, n_samples: int) -> NDArray[np.float64]:
+        """
+        Draw n_samples bootstrap samples (with replacement) from the stored data.
+        Returns a list of scalar bootstrap samples (averages).
+        """
+        bootstrap_samples = []
+        data_len = self.data.shape[self.axis] if self.data.ndim > 0 else len(self.data)
+
+        for _ in range(n_samples):
+            # Sample indices with replacement
+            indices = np.random.randint(0, data_len, size=self.sample_size)
+            if self.data.ndim > 0:
+                resampled = np.take(self.data, indices, axis=self.axis)
+            else:
+                resampled = self.data[indices]
+            # Average the resampled data to form bootstrap sample
+            bootstrap_stat = np.mean(resampled)
+            bootstrap_samples.append(bootstrap_stat)
+        return np.array(bootstrap_samples)
+
+    def log_prob(self, data: float) -> float:
+        """
+        For an empirical bootstrap distribution, we can't assign proper log_prob.
+        Return uniform log probability over data within range, else -inf.
+        """
+        data_min = np.min(self.data)
+        data_max = np.max(self.data)
+        if data_min <= data <= data_max:
+            return -np.log(len(self.data))  # uniform over empirical data points approx
+        else:
+            return float('-inf')
+
+    def expectation(self, func: Callable[[float], float]) -> 'Distribution':
+        """
+        Raise NotImplementedError for now.
+        """
+        raise NotImplementedError("bootstrap distribution expectation not implemented")
+
+
+class NormalDistribution(Distribution[float]):
     def __init__(self, mean: float, std_dev: float):
         self.mean = mean
         self.std_dev = std_dev
         self._rv = sp.norm(loc=mean, scale=std_dev)
 
-    def sample(self, n_samples: int) -> List[np.ndarray]:
+    def sample(self, n_samples: int) -> NDArray[np.float64]:
         # Return a list of floats (np.float64)
         samples = self._rv.rvs(size=n_samples)
-        return list(samples)
+        return np.array(samples)
 
     def log_prob(self, data: np.ndarray) -> float:
         # scalar log_pdf for one data point
@@ -70,7 +126,7 @@ class NormalDistribution(Distribution[np.ndarray]):
         func: Callable[[np.ndarray], float],
         n_samples: int = 10000,
         n_boot: int = 1000
-    ) -> 'Distribution':
+    ) -> BootstrapDistribution:
         """
         Monte Carlo bootstrap to estimate the empirical distribution of func(X).
 
@@ -98,76 +154,8 @@ class NormalDistribution(Distribution[np.ndarray]):
 
             estimates.append(stat)
             
-        return BootstrapDistribution(estimates)
+        return BootstrapDistribution[float](estimates)
 
 
-def bootstrap_distribution(
-    data: Union[List[T], np.ndarray],
-    sample_size: Union[float, int, None] = None,
-    axis: int = 0
-) -> 'BootstrapDistribution':
-    return BootstrapDistribution(data, sample_size, axis)
-
-
-class BootstrapDistribution(Distribution[np.ndarray]):
-    def __init__(
-        self,
-        data: Union[List[float], np.ndarray],
-        sample_size: Union[float, int, None] = None,
-        axis: int = 0
-    ):
-        # Store data as numpy array
-        self.data = np.array(data)
-        self.axis = axis
-
-        if sample_size is None:
-            # Default to same size as data along axis
-            self.sample_size = self.data.shape[axis] if self.data.ndim > 0 else len(self.data)
-        elif isinstance(sample_size, float) and 0 < sample_size < 1:
-            # If fraction, take fraction of data length
-            self.sample_size = int(sample_size * (self.data.shape[axis] if self.data.ndim > 0 else len(self.data)))
-        elif isinstance(sample_size, int):
-            self.sample_size = sample_size
-        else:
-            raise ValueError("sample_size must be None, float between 0 and 1, or int >= 1")
-
-    def sample(self, n_samples: int) -> List[float]:
-        """
-        Draw n_samples bootstrap samples (with replacement) from the stored data.
-        Returns a list of scalar bootstrap samples (averages).
-        """
-        bootstrap_samples = []
-        data_len = self.data.shape[self.axis] if self.data.ndim > 0 else len(self.data)
-
-        for _ in range(n_samples):
-            # Sample indices with replacement
-            indices = np.random.randint(0, data_len, size=self.sample_size)
-            if self.data.ndim > 0:
-                resampled = np.take(self.data, indices, axis=self.axis)
-            else:
-                resampled = self.data[indices]
-            # Average the resampled data to form bootstrap sample
-            bootstrap_stat = np.mean(resampled)
-            bootstrap_samples.append(bootstrap_stat)
-        return bootstrap_samples
-
-    def log_prob(self, data: float) -> float:
-        """
-        For an empirical bootstrap distribution, we can't assign proper log_prob.
-        Return uniform log probability over data within range, else -inf.
-        """
-        data_min = np.min(self.data)
-        data_max = np.max(self.data)
-        if data_min <= data <= data_max:
-            return -np.log(len(self.data))  # uniform over empirical data points approx
-        else:
-            return float('-inf')
-
-    def expectation(self, func: Callable[[float], float]) -> 'Distribution':
-        """
-        Raise NotImplementedError for now.
-        """
-        raise NotImplementedError("bootstrap distribution expectation not implemented")
-
-    def __repr__(self):
-        return f"BootstrapDistribution(data_len={len(self.data)}, sample_size={self.sample_size})"
+    #def __repr__(self):
+    #    return f"BootstrapDistribution(data_len={len(self.data)}, sample_size={self.sample_size})"

@@ -1,0 +1,14 @@
+LICENSE
+README.md
+pyproject.toml
+setup.cfg
+setup.py
+probpipe/__init__.py
+probpipe/distributions.py
+probpipe.egg-info/PKG-INFO
+probpipe.egg-info/SOURCES.txt
+probpipe.egg-info/dependency_links.txt
+probpipe.egg-info/requires.txt
+probpipe.egg-info/top_level.txt
+tests/__init__.py
+tests/test_normal_distribution.py

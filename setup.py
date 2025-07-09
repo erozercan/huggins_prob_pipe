@@ -4,8 +4,8 @@ setup(
     name="probpipe",
     version="0.1.0",
     description="Probpipe package",
-    author="Yongho Lim", "Can Erozer",
-    author_email="ylim2@bu.edu", "caner@bu.edu",
+    author="Yongho Lim, Can Erozer",
+    author_email="ylim2@bu.edu, caner@bu.edu",
     packages=find_packages(),
     install_requires=[
         "numpy",

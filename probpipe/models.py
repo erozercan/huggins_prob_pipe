@@ -1,184 +1,94 @@
-from typing import Callable, List, TypeVar, Mapping
-from abc import ABC, abstractmethod
+import jax
+import jax.numpy as jnp
+from jax import random, lax
+import blackjax
 import numpy as np
-import pymc as pm
-import scipy.stats as sp
-from scipy.special import logsumexp
-from prefect import flow, task, unmapped
-from numpy.typing import NDArray
-from .distribution import Distribution, NormalDistribution, BootstrapDistribution, MixtureDistribution
+from tqdm import trange
+from typing import Optional, Callable
+from .distributions import EmpiricalDistribution
 
 
-T=TypeVar("T")
-
-#regular function
-def simple_linreg(data: NDArray, sigma: float) -> NormalDistribution:
+def simple_linreg(
+    data: np.ndarray,
+    prior_dist,
+    obs_dist,
+    num_samples: int = 1000,
+    step_size: float = 0.01,
+    seed: int = 0,
+    sampler: Optional[Callable] = None,
+    sampler_kwargs: Optional[dict] = None,
+):
     """
-    y = alpha * X + epsilon, where epsilon ~ Normal(0, sigma^2) 
+    Bayesian linear regression model:
 
-    alpha ~ Normal(mean_alpha, variance_alpha)
-   
-    Parameters:
-    - data: Information object containing 'X', 'y', 'mean_alpha' (prior mean), and 'variance_alpha' (prior variance).
-    - sigma: known standard deviation of Gaussian noise in the linear model.
+        y_i = beta0 + x_i^T * beta1 + epsilon_i,   for i = 1, ..., n
 
-    Returns:
-    - Posterior distribution of alpha as a NormalDistribution with updated mean and std.
-    """
-
-    X = data.data['X']
-    y = data.data['y']
-    prior_mean = data.data['mean_alpha']
-    prior_var = data.data['variance_alpha']
-
-    precision_post = 1.0 / prior_var + np.sum(X ** 2) / (sigma ** 2)
-    post_var = 1.0 / precision_post
-    post_mean = post_var * (prior_mean / prior_var + np.sum(X * y) / (sigma ** 2))
-    post_std = np.sqrt(post_var)
-
-    return NormalDistribution(post_mean, post_std)
-
-
-@task
-def robust_regression(data: NDArray, sigma: float, dof: float) -> NormalDistribution:
-    """
-    Implements robust regression using a Student's t-distributed noise model:
-    
-        y_i = alpha * X_i + epsilon_i,
-        epsilon_i ~ StudentT(nu=dof, mu=0, sigma=sigma)
-    
     where:
-    - 'alpha' is the regression coefficient with a prior Normal(mean_alpha, variance_alpha)
-    - noise (epsilon) follows a Student's t-distribution with 'dof' degrees of freedom,
-      allowing heavier tails than Gaussian noise.
-    
-    Parameters:
-    - data: object containing fields 'X', 'y', 'mean_alpha' (prior mean), 'variance_alpha' (prior variance)
-    - sigma: scale parameter for the Student's t noise
-    - dof: degrees of freedom for the Student's t noise
-    
-    Returns:
-    - Posterior distribution of alpha as a NormalDistribution (approximate posterior mean and std from MCMC)
-    """
+        - y_i: observed response (scalar)
+        - x_i: predictor vector of length d
+        - beta0: scalar intercept parameter
+        - beta1: vector of regression coefficients of length d
+        - epsilon_i: noise term ~ Normal(0, sigma^2), independent across i
 
-    X = data.data['X']
-    y = data.data['y']
-    prior_mean = data.data['mean_alpha']
-    prior_var = data.data['variance_alpha']
+    Model assumptions:
+    1. Likelihood:
+        y_i | x_i, beta0, beta1, sigma ~ Normal(mu_i, sigma^2)
+        with mu_i = beta0 + dot(x_i, beta1)
 
-    with pm.Model() as model:
-        # Prior on regression coefficient alpha
-        alpha = pm.Normal('alpha', mu=prior_mean, sigma=np.sqrt(prior_var))
-        
-        # Likelihood with Student's t noise
-        y_obs = pm.StudentT('y_obs', nu=dof, mu=alpha * X, sigma=sigma, observed=y)
-        
-        # Run inference: use MAP initialization to speed up sampling or just sample
-        trace = pm.sample(2000, tune=1000, cores=1, return_inferencedata=False, progressbar=False)
+    2. Prior distributions:
+        beta0 ~ prior_dist on intercept (e.g., Normal, Half-Normal)
+        beta1 ~ prior_dist on slopes (can be joint or factorized)
+        sigma assumed fixed and known or specified separately
 
-    # Extract posterior mean and std of alpha
-    post_mean = np.mean(trace['alpha'])
-    post_std = np.std(trace['alpha'])
+    3. Posterior distribution:
+        p(beta0, beta1 | data) ∝
+            [product over i=1 to n of p(y_i | x_i, beta0, beta1, sigma)] x p(beta0) x p(beta1)
 
-    return NormalDistribution(post_mean, post_std)
+    Inputs:
+        - data: numpy array with predictors and response concatenated (shape: n x (d+1))
+        - prior_dist: prior distribution object with log_prob method over parameter vector (beta0 and beta1)
+        - obs_dist: observation noise distribution object (e.g., NormalDistribution)
+        - num_samples: number of MCMC samples
+        - step_size: step size for sampler
+        - seed: PRNG seed
+        - sampler: sampling function or None to use default
 
-#@task
-#def bootstrap_distribution(
-#    data: NDArray,
-#    sample_size: float | int | None,
-#    axis: int = 0
-#) -> BootstrapDistribution:
-#    return BootstrapDistribution(data, sample_size, axis)
+    Output:
+        - EmpiricalDistribution object containing posterior samples over parameters
+    """   
 
 
-@flow
-def bayesbag_linreg(
-    data: NDArray, 
-    sigma: float, 
-    n_bootstrap: int = 100
-    ) -> MixtureDistribution:
-    
-    bd = BootstrapDistribution(data)
-    bootstrap_samples = bd.sample(n_bootstrap)
-    dists = [simple_linreg(sample, sigma) for sample in bootstrap_samples]
-    joint_distribution = MixtureDistribution(components=dists)
-    return joint_distribution
+    key = random.PRNGKey(seed)
 
-@task
-def bayesbag_regression(
-    data: NDArray,
-    model_func: Callable[[NDArray], Distribution],
-    n_bootstrap: int = 100,
-    sample_size: int | None = None,
-    model_kwargs: dict = None,
-) -> MixtureDistribution:
-    """
-    Abstract BayesBag regression procedure that:
-    1) Creates a bootstrap distribution from the data,
-    2) Draws bootstrap samples,
-    3) Applies a generic model function to each bootstrap sample to get posterior distributions,
-    4) Combines these bootstrap posteriors into a mixture distribution approximating the bagged posterior.
+    X = jnp.array(data[:, :-1])
+    y = jnp.array(data[:, -1])
+    n, d = X.shape
 
-    Parameters:
-    ----------
-    data : Information
-        Original dataset.
-    model_func : Callable[[Information, ...], Distribution]
-        Generic regression model function returning posterior distribution given data.
-    n_bootstrap : int
-        Number of bootstrap samples to draw.
-    sample_size : int | None
-        Size of each bootstrap sample (default: size of original data).
-    model_kwargs : dict | None
-        Optional extra params to pass to model_func.
+    def log_posterior(params):
+        betas = params  # treat entire vector including intercept as one vector
+        y_pred = betas[0] + X @ betas[1:]
+        log_prior = prior_dist.log_prob(betas)
+        residuals = y - y_pred
+        log_lik = obs_dist.log_prob(residuals)
+        return log_prior + log_lik
 
-    Returns:
-    -------
-    Distribution
-        A MixtureDistribution representing the bagged posterior across bootstrap samples.
-    """
+    init_params = jnp.zeros(d + 1)
 
-    if model_kwargs is None:
-        model_kwargs = {}
+    if sampler is None:
+        samples, accept_rates = run_chain_nuts(key, init_params, log_posterior, num_samples, step_size)
+    elif callable(sampler):
+        if sampler_kwargs is None:
+            sampler_kwargs = {}
+        samples, accept_rates = sampler(
+            key, init_params, log_posterior, num_samples, step_size, **sampler_kwargs
+        )
+    else:
+        raise ValueError("sampler must be None or a callable")
 
-    # Create bootstrap distribution with specified sample size
-    bd = BootstrapDistribution(data, sample_size=sample_size)
-    
-    # Draw bootstrap samples
-    bootstrap_samples = bd.sample(n_bootstrap)
-    
-    # Fit model and get posterior per bootstrap sample
-    dists = [model_func(sample, **model_kwargs) for sample in bootstrap_samples]
-    
-    # Combine posterior distributions into a mixture distribution
-    joint_distribution = MixtureDistribution(components=dists)
+    mean_accept_rate = jnp.mean(accept_rates)
+    print(f"Mean acceptance rate: {mean_accept_rate:.3f}")
 
-    return joint_distribution
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return EmpiricalDistribution(samples)
 
 
 

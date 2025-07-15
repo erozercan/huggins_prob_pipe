@@ -1,3 +1,11 @@
-from .distributions import Distribution, NormalDistribution
+from .distributions import Distribution, NormalDistribution, HalfNorm, MultiNorm, EmpiricalDistribution, CompositePrior
+from .models import simple_linreg
+from .mcmc import nuts_sample, run_chain_nuts
 
-__all__ = ["Distribution", "NormalDistribution"]
+
+__all__ = [
+    "NormalDistribution",
+    "Distribution",
+    "EmpiricalDistribution"
+    "simple_linreg"
+]

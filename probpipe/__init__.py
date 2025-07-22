@@ -1,11 +1,13 @@
-from .distributions import Distribution, NormalDistribution, HalfNorm, MultiNorm, EmpiricalDistribution, CompositePrior
-from .models import simple_linreg
-from .mcmc import nuts_sample, run_chain_nuts
+from .distributions import Distribution, NormalDistribution, EmpiricalDistribution, KDELogPDF
+from .models import simple_linreg, Workflow
+
 
 
 __all__ = [
     "NormalDistribution",
     "Distribution",
     "EmpiricalDistribution"
-    "simple_linreg"
+    "simple_linreg",
+    "Workflow",
+    "KDELogPDF"
 ]

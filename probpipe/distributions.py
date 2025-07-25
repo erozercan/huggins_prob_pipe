@@ -43,6 +43,7 @@ class BootstrapDistribution(Distribution[float]):
         sample_size: Optional[int | float] = None,
         axis: int = 0
     ):
+
         # Store data as numpy array (bootstrap is empirical, numpy based)
         self.data = np.array(data)
         self.axis = axis
@@ -55,6 +56,7 @@ class BootstrapDistribution(Distribution[float]):
             self.sample_size = sample_size
         else:
             raise ValueError("sample_size must be None, float between 0 and 1, or int >= 1")
+
 
     def sample(self, n_samples: int) -> np.ndarray:
         bootstrap_samples = []
@@ -113,6 +115,8 @@ class NormalDistribution:
         return EmpiricalDistribution(np.array([stat]))
 
 
+
+
 class KDELogPDF(Op):
     itypes = [pt.dscalar]
     otypes = [pt.dscalar]
@@ -122,6 +126,7 @@ class KDELogPDF(Op):
         (x,) = inputs    # x is a float scalar
         outputs[0][0] = np.array(self.kde.logpdf([x]))  
         # returns array([value]), so take the first element or just use [x]!
+
 
 
 

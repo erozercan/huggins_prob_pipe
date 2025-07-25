@@ -29,6 +29,12 @@ class Input:
         else:
             self.var = name + "_var"   # fallback or error
 
+    def __str__(self):
+        return f"<Input: {self.name} (dtype={self.dtype}, ndim={self.ndim})>"
+    
+    def __call__(self, *args, **kwargs):
+        return self.var
+
 class Workflow:
     def __init__(self):
         self.inputs: Dict[str, Input] = {}
@@ -74,6 +80,10 @@ class Workflow:
             raise RuntimeError("Run function already set")
         self._run_func = func
         return func
+    
+    def show_inputs(self):
+        for name, inp in self.inputs.items():
+            print(inp)
 
 
 

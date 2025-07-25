@@ -15,12 +15,12 @@ with Workflow() as pp:
     def run(prior_dist, data, sigma):
         with pm.Model() as model:
 
-            if isinstance(prior_dist, EmpiricalDistribution):
+            if isinstance(prior_dist, EmpiricalDistribution):  ####
                 alpha = pm.Flat("alpha")
                 prior_logp = prior_dist.log_prob(alpha)
                 pm.Potential("prior_factor", prior_logp)
-            else:
-                alpha = pm.Normal("alpha", mu=prior_dist.mean, sigma=prior_dist.std_dev)
+            else: # isinstance(prior_dist, NormalDistribution):
+                alpha = pm.Normal("alpha", mu=prior_dist.mean, sigma=prior_dist.std_dev) ####
             
 
             pm.Normal("obs", mu=alpha * data, sigma=sigma, observed=data)

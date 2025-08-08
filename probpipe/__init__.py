@@ -1,11 +1,16 @@
-from .distributions import Distribution, NormalDistribution, HalfNorm, MultiNorm, EmpiricalDistribution, CompositePrior
-from .models import simple_linreg
-from .mcmc import nuts_sample, run_chain_nuts
+from .distributions import Distribution, NormalDistribution, BootstrapDistribution, EmpiricalDistribution
+from .models import simple_linreg, Workflow
+from .mcmc import metropolis_hastings
+
 
 
 __all__ = [
     "NormalDistribution",
     "Distribution",
-    "EmpiricalDistribution"
-    "simple_linreg"
+    "EmpiricalDistribution",
+    "BootstrapDistribution",
+    "Workflow",
+    "EmpiricalDistribution",
+    "simple_linreg", 
+    "metropolis_hastings"
 ]

@@ -1,26 +1,68 @@
-import jax.numpy as jnp
-import blackjax
-from jax import random, lax
+import numpy as np
+from typing import Callable, Iterator, Optional
+
+def metropolis_hastings_iter(
+    log_prob_fn: Callable[[float], float],
+    initial_state: float,
+    proposal_std: float,
+    random_seed: Optional[int] = None
+) -> Iterator[float]:
+    """
+    Metropolis-Hastings MCMC sampler as an iterator/generator.
+
+    Parameters
+    ----------
+    log_prob_fn: Callable[[float], float]
+        Function returning the log-probability of a state.
+    initial_state: float
+        Starting point of the Markov chain.
+    proposal_std: float
+        Standard deviation of the Gaussian proposal distribution.
+    random_seed: Optional[int]
+        Seed for reproducibility.
+
+    Yields
+    ------
+    float
+        Next MCMC sample.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    current = initial_state
+    current_log_prob = log_prob_fn(current)
+
+    while True:
+        # Propose new candidate from N(current, proposal_std^2)
+        candidate = np.random.normal(current, proposal_std)
+        candidate_log_prob = log_prob_fn(candidate)
+
+        # Acceptance log-ratio
+        log_accept_ratio = candidate_log_prob - current_log_prob
+
+        # Accept or reject
+        if np.log(np.random.rand()) < log_accept_ratio:
+            current = candidate
+            current_log_prob = candidate_log_prob
+
+        yield current
 
 
-# Single NUTS step function
-def nuts_sample(rng_key, logdensity, current_position, step_size=0.01):
-    dim = current_position.shape[0]
-    inverse_mass_matrix = jnp.ones(dim)
-    nuts = blackjax.nuts(logdensity, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
+def metropolis_hastings(
+    log_prob_fn: Callable[[float], float],
+    initial_state: float,
+    n_samples: int,
+    proposal_std: float,
+    burn_in: int,
+    random_seed: Optional[int] = None) -> np.ndarray:
+    """
+    Runs the metropolis_hastings_iter generator to produce a fixed number of samples.
 
-    state = nuts.init(current_position)
-    state, info = nuts.step(rng_key, state)
-    return state.position, info.acceptance_rate
-
-
-# Vectorized chain sampling with lax.scan
-def run_chain_nuts(key, initial_position, logdensity_fn, num_samples, step_size=0.01):
-    def one_step(carry, rng_key):
-        position = carry
-        new_position, accept_rate = nuts_sample(rng_key, logdensity_fn, position, step_size)
-        return new_position, (new_position, accept_rate)
-
-    keys = random.split(key, num_samples)
-    _, (samples, accept_rates) = lax.scan(one_step, initial_position, keys)
-    return samples, accept_rates
+    Returns all samples in a numpy array.
+    """
+    sampler = metropolis_hastings_iter(log_prob_fn, initial_state, proposal_std, random_seed)
+    samples = np.empty(n_samples)
+    for i in range(n_samples):
+        samples[i] = next(sampler)
+    samples = samples[burn_in:]  # Discard burn-in samples
+    return samples  

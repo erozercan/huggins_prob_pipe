@@ -1,6 +1,7 @@
 from probpipe import NormalDistribution, EmpiricalDistribution, metropolis_hastings
 from probpipe.models import Workflow
 import numpy as np
+from prefect import flow, task
 
 
 np.random.seed(42)  
@@ -10,7 +11,7 @@ with Workflow() as pp:
     data      = pp.Input('data', float)
     sigma     = pp.Input('sigma', float)
     
-    @pp.run_decorator
+    @pp.run_decorator(as_task=True)
     def inference_step(prior_dist, data, sigma):
         # Define log posterior = log prior + log likelihood
 
@@ -28,7 +29,7 @@ with Workflow() as pp:
         initial_state = 0.0  
         
         posterior_samples = metropolis_hastings(log_posterior, initial_state, n_samples, proposal_std, burn_in = 1000)
-        
+         
         emp_dist = EmpiricalDistribution(posterior_samples)
         normal_dist = NormalDistribution.from_distribution(emp_dist)
 
@@ -36,13 +37,6 @@ with Workflow() as pp:
         return normal_dist
 
     
-
-## This should be simplified
-## Todos
-## Make a simple linear regression function and work with workflow
-## Prefect on this workflow 
-
-
 
 
 # Create initial prior

@@ -24,7 +24,7 @@ from scipy.stats import gaussian_kde
 T = TypeVar("T")
 
 
-class Distribution[T](ABC):
+class Distribution(Generic[T], ABC):
     @abstractmethod
     def sample(self, n_samples: int) -> NDArray[T]:
         """
@@ -47,7 +47,7 @@ class Distribution[T](ABC):
         """
         raise NotImplementedError("This method should be implemented by subclasses")
 
-class BootstrapDistribution[T](Distribution[T]):
+class BootstrapDistribution(Distribution):
     def __init__(
         self,
         data: NDArray,
@@ -157,8 +157,6 @@ class NormalDistribution(Distribution):
         return BootstrapDistribution[float](estimates)
 
 
-
-
     @classmethod
     def from_distribution(cls, dist: Distribution) -> 'NormalDistribution':
         mean = dist.mean()
@@ -168,89 +166,24 @@ class NormalDistribution(Distribution):
 
         return cls(mean=mean, std_dev=std_dev)
 
-
-    #def __repr__(self):
-    #    return f"BootstrapDistribution(data_len={len(self.data)}, sample_size={self.sample_size})"
-
-
-
-
-# class KDELogPDF(Op):
-#     itypes = [pt.dscalar]
-#     otypes = [pt.dscalar]
-#     def __init__(self, kde):
-#         self.kde = kde
-#     def perform(self, node, inputs, outputs):
-#         (x,) = inputs    # x is a float scalar
-#         outputs[0][0] = np.array(self.kde.logpdf([x]))  
-#         # returns array([value]), so take the first element or just use [x]!
-
-
-
-
-# class EmpiricalDistribution(Distribution[T]):
-#     def __init__(self, samples: NDArray):
-#         self.samples = np.asarray(samples)
-#         self.num_samples = self.samples.shape[0]
-#         self.samples_var = pt.constant(self.samples)
-#         self.kde = gaussian_kde(samples)
-#         self.logpdf_op = KDELogPDF(self.kde)
-
-#     def sample(self, n_samples: int) -> pt.TensorVariable:
-#         indices = np.random.choice(self.num_samples, size=n_samples, replace=True)
-#         sampled = self.samples[indices]
-#         return pt.constant(sampled)
-
-#     def log_prob(self, data):
-#         # data can be a PyTensor variable
-#         return self.logpdf_op(data)
     
-    
-#     def expectation(
-#         self,
-#         func: Callable[[pt.TensorVariable], pt.TensorVariable],
-#         n_boot: int = 1000,
-#         sample_size: int | None = None  # optional size for bootstrap resample, defaults to empirical size
-#     ) -> BootstrapDistribution:
-#         """
-#         Estimate the distribution of func(X) where X ~ EmpiricalDistribution by bootstrap.
+    def to_pymc_variable(self, name: str):
+        if pm.modelcontext(model=None) is None:
+            raise RuntimeError("You must be inside a pm.Model() context to create PyMC variables.")
+        return pm.Normal(name, mu=self.mean, sigma=self.std_dev)
 
-#         Parameters
-#         ----------
-#         func : Callable[[pt.TensorVariable], pt.TensorVariable]
-#             Function to apply on bootstrap resampled samples.
-#         n_boot : int
-#             Number of bootstrap iterations.
-#         sample_size : int or None
-#             Size of each bootstrap sample (defaults to original num_samples).
-
-#         Returns
-#         -------
-#         BootstrapDistribution
-#             Distribution of bootstrap estimates of func(X).
-#         """
-#         if sample_size is None:
-#             sample_size = self.num_samples
-
-#         estimates = []
-#         for _ in range(n_boot):
-#             indices = np.random.choice(self.num_samples, size=sample_size, replace=True)
-#             resampled = self.samples[indices]
-
-#             # Apply func on pytensor constant wrapping bootstrap resample,
-#             # then evaluate the computation to get a numpy scalar
-#             stat = func(pt.constant(resampled)).eval()
-
-#             # Reduce to scalar if numpy array is returned
-#             if isinstance(stat, np.ndarray):
-#                 stat = np.mean(stat)
-#             estimates.append(stat)
-
-#         return BootstrapDistribution(np.array(estimates))
+    def __repr__(self):
+        return f"NormalDistribution(mean={self.mean}, std_dev={self.std_dev})"
 
 
 
-class EmpiricalDistribution(Generic[T]):
+
+
+
+
+
+
+class EmpiricalDistribution(Distribution):
     def __init__(self, samples: np.ndarray):
         self.samples = np.asarray(samples)
         self.num_samples = self.samples.shape[0]
@@ -333,3 +266,6 @@ class EmpiricalDistribution(Generic[T]):
             estimates.append(stat)
 
         return BootstrapDistribution(np.array(estimates))
+    
+    def __repr__(self):
+        return f"EmpiricalDistribution(num_samples={self.num_samples})"

@@ -1,13 +1,16 @@
-from typing import Callable, List, TypeVar, Mapping, Optional, Dict, Any
+from typing import Callable, TypeVar, Mapping, Optional, get_type_hints, Any, Union, get_args, get_origin
 from abc import ABC, abstractmethod
 import numpy as np
 import pymc as pm
 from prefect import flow, task, unmapped
 from numpy.typing import NDArray
-from .distributions import NormalDistribution, EmpiricalDistribution, JointEmpiricalDistribution, MultiVarNormalDistribution
+from .distributions import NormalDistribution, EmpiricalDistribution, Distribution_Empirical, MultiVarNormalDistribution, Distribution_Density, KDE, \
+    kde_as_mvnormal_params, kde_as_exponential_rate, kde_as_gamma_params
 import pytensor.tensor as pt
 import matplotlib.pyplot as plt
 from functools import wraps
+import inspect
+
 
 T=TypeVar("T")
 
@@ -31,7 +34,6 @@ class Input:
 class Workflow:
     def __init__(self):
         self._run_func = None
-        self._current_prior = None          # density-only
         self._last_posterior = None         # empirical
         self._posteriors = []
         self.inputs = {}
@@ -48,12 +50,6 @@ class Workflow:
     def instantiate(self, **input_values):
         self._defaults.update(input_values)
 
-    def set_prior(self, prior_density):
-        """Set the current prior (must be a density-backed object)."""
-        self._current_prior = prior_density
-
-    def get_prior(self):
-        return self._current_prior
 
     def last_posterior(self):
         return self._last_posterior
@@ -61,10 +57,10 @@ class Workflow:
     def all_posteriors(self):
         return list(self._posteriors)
 
-    def run(self, **kwargs):
+    def run(self, *args, **kwargs):
         if self._run_func is None:
             raise RuntimeError("No run function registered")
-        return self._run_func(**kwargs)
+        return self._run_func(*args, **kwargs)
 
     def __enter__(self):
         return self
@@ -72,98 +68,69 @@ class Workflow:
     def __exit__(self, exc_type, exc_value, traceback):
         pass
 
+    
     def run_decorator(self, func: Callable):
         if self._run_func is not None:
             raise RuntimeError("Run function already set")
-        
+
+        # Resolve annotations (handles postponed annotations / forward refs)
+        try:
+            _type_hints = get_type_hints(func, globalns=func.__globals__, localns=None)
+        except Exception:
+            # Fallback if resolution fails; I'll read raw annotations from signature
+            _type_hints = {}
+
+        sig = inspect.signature(func)
+
+        def _expects_density(annotation) -> bool:
+            """Return True if annotation expects a Distribution_Density (possibly inside Union/Optional)."""
+            if annotation is inspect._empty or annotation is None:
+                return False
+
+            origin = get_origin(annotation)
+            if origin is None:
+                # Simple class annotation
+                try:
+                    return issubclass(annotation, Distribution_Density)  # type: ignore[arg-type]
+                except TypeError:
+                    return False
+
+            # Handle parametrized generics like Distribution_Density[T]
+            try:
+                return issubclass(origin, Distribution_Density)  # type: ignore[arg-type]
+            except TypeError:
+                return False
+
         @wraps(func)
-        def wrapper(*args, data, prior_dist=None, obs_dist=None, **kwargs):
-            #happening last
+        def wrapper(*args, **kwargs):
+            #NOT IMPLEMENTED YET
+            for val in args:
+                continue
             
-            #mu_alpha = posterior.samples["alpha"].mean()
-            #sigma_alpha = posterior.samples["alpha"].std()
+            for name, value in list(kwargs.items()):
+                # Skipping unknown kwargs
+                if name not in sig.parameters:
+                    continue
 
-            #alpha=NormalDistribution(mean=mu_alpha, std_dev=sigma_alpha)
-            
-            #mu_beta = posterior.samples["beta"].mean(axis=0)
-            #sigma_beta = posterior.samples["beta"].std(axis=0)
+                # Get the resolved annotation for this parameter
+                ann = _type_hints.get(name, sig.parameters[name].annotation)
 
-            #beta=NormalDistribution(mean=mu_beta, std_dev=sigma_beta)
-            
-            #sigma_sigma = posterior.samples["sigma"].std()  # scale for HalfNormal
-            #sigma=HalfNorm(std_dev=sigma_sigma)
+                # If the function expects a density-based distribution,
+                # but the user passed an empirical distribution, convert via KDE.
+                if _expects_density(ann):
+                    if isinstance(value, Distribution_Empirical):
+                        if kwargs["conversion_type"]=="Multivariate Gaussian KDE":
+                            kwargs[name] = KDE.from_distribution(value)
+                        elif kwargs["conversion_type"]=="Multivariate Gaussian":
+                            kwargs[name] = MultiVarNormalDistribution.from_distribution(value)
+                        #many more distributions to be added.
+                        
+                    # else: if it's already a Distribution_Density (or something else), leaving it as-is
 
-            #prior_dists={#"alpha":alpha,
-                         #"beta": beta
-                         #"sigma":sigma
-                         #}
-
-            #INPUT CONVERSION (type conversion for inputs)
-            prior_in = prior_dist if prior_dist is not None else self._current_prior
-            if prior_in is None:
-                raise ValueError("No prior provided. Call pp.set_prior(...) first or pass prior_dist=...")
-            
-            # If caller accidentally passed an empirical prior, converts it to density
-            prior_density = ensure_density_prior(prior_in)
-
-            #CALL FUNC with a density prior
-            posterior=func(data= data, prior_dist=prior_density, obs_dist=obs_dist, **kwargs)
-
-            #OUTPUT: NEXT PRIOR (/w density), keeping it internal 
-            next_prior_density = posterior_to_prior_density(posterior) 
-            self._current_prior = next_prior_density
-
-            #Storing posterior for later inspection
-            self._last_posterior = posterior
-            self._posteriors.append(posterior)
-            return posterior
+            return func(*args, **kwargs)
 
         self._run_func = wrapper
         return wrapper
-
-#@task
-def ensure_density_prior(prior):
-    """
-    If `prior` is already a density-backed object (e.g., MultiVNormalDistribution),
-    return it. If it’s empirical (e.g., JointEmpiricalDistribution with 'beta'),
-    fit a density (e.g., MVN) and return that.
-    """
-    # Density type (example)
-    if hasattr(prior, "mean") and hasattr(prior, "cov"):
-        return prior
-    
-    # Dict form: {"beta": density_or_empirical}
-    if isinstance(prior, dict):
-        b = prior["beta"]
-        if hasattr(b, "mean") and hasattr(b, "cov"):
-            return prior  # already density
-        else:
-            # empirical → density
-            mu = b.samples.mean(axis=0)
-            cov = np.cov(b.samples, rowvar=False)
-            cov = 0.5 * (cov + cov.T) + 1e-6*np.eye(cov.shape[0])
-            return {"beta": MultiVarNormalDistribution(mean=mu, cov=cov)}
-        
-    # Empirical beta alone
-    if hasattr(prior, "samples"):
-        mu = prior.samples.mean(axis=0)
-        cov = np.cov(prior.samples, rowvar=False)
-        cov = 0.5 * (cov + cov.T) + 1e-6*np.eye(cov.shape[0])
-        return MultiVarNormalDistribution(mean=mu, cov=cov)
-
-    raise TypeError("Unsupported prior type for density conversion")
-
-#@task
-def posterior_to_prior_density(posterior):
-    """
-    Build the next iteration prior (a density) from the empirical posterior.
-    Keep it simple: only carry over beta as MVN; keep sigma weak/constant if desired.
-    """
-    beta_samps = posterior.samples["beta"]               # (n, d)
-    mu = beta_samps.mean(axis=0)
-    cov = np.cov(beta_samps, rowvar=False)
-    cov = 0.5 * (cov + cov.T) + 1e-6*np.eye(cov.shape[0])
-    return {"beta": MultiVarNormalDistribution(mean=mu, cov=cov)}
 
 
 
@@ -185,16 +152,16 @@ def simple_linreg(data: NDArray, prior_dist, obs_dist,num_samples=1000,step_size
     X=data["X"] 
     Y=data["Y"] 
 
-    #d=X.shape[1]
-
-    #Model is a basic bayesian linear regression: Y= alpha + beta_1 * X1 + beta_2 * X2
+    #Model is a basic bayesian linear regression: Y= beta @ X
     basic_model = pm.Model()
+
+    mu, cov = kde_as_mvnormal_params(prior_dist)
 
     with basic_model:
         # Priors for unknown model parameters
         #alpha = pm.Normal("alpha", mu=prior_dist["alpha"].mean, sigma=prior_dist["alpha"].std_dev)
         #beta = pm.Normal("beta", mu=prior_dist["beta"].mean, sigma=prior_dist["beta"].std_dev, shape=d) 
-        beta = pm.MvNormal("beta", mu=prior_dist.mean, cov=prior_dist.cov)
+        beta = pm.MvNormal("beta", mu=mu, cov=cov)
         #sigma = pm.HalfNormal("sigma", sigma=prior_dist["sigma"].std_dev)
         sigma = pm.HalfNormal("sigma", sigma=5.0)
 
@@ -210,7 +177,6 @@ def simple_linreg(data: NDArray, prior_dist, obs_dist,num_samples=1000,step_size
         #mu = alpha + pm.math.dot(X.T, beta) if X = np.array([X1, X2])
 
         # Likelihood (sampling distribution) of observations
-
         if isinstance(obs_dist, NormalDistribution):
             Y_obs = pm.Normal("Y_obs", mu=mu, sigma=sigma, observed=Yd)
         else:
@@ -220,30 +186,119 @@ def simple_linreg(data: NDArray, prior_dist, obs_dist,num_samples=1000,step_size
         #NUTS SAMPLER
             with basic_model:
                 # draw 1000 posterior samples
-                #target_accept=0.95 helps reduce divergent transitions.
                 idata = pm.sample(num_samples, tune=num_samples, chains=2, step_size=step_size, return_inferencedata=True)
         else:
             #SLICE SAMPLER
             with basic_model:
-                # instantiate sampler
                 step = pm.Slice()
                 # draw 5000 posterior samples
                 idata = pm.sample(num_samples, tune=num_samples, chains=2, step=step_size)
                 #trace = pm.sample(draws=1000, tune=500, chains=2, progressbar=False, cores=1)
 
-    #print(idata.posterior["beta"].dims)
 
-    samples = {
+    #samples = {
     #"alpha": idata.posterior["alpha"].stack(sample=("chain", "draw")).values,
     #"beta": idata.posterior["beta"].stack(sample=("chain", "draw")).values,
-    "beta": idata.posterior["beta"].stack(sample=("chain", "draw")).transpose("sample", "beta_dim_0").values
+    #"beta": idata.posterior["beta"].stack(sample=("chain", "draw")).transpose("sample", "beta_dim_0").values
     #"sigma": idata.posterior["sigma"].stack(sample=("chain", "draw")).values
-    }
+    #}
 
-    #print(f"Beta values shape is {samples["beta"].shape}")
+    beta_samples=idata.posterior["beta"].stack(sample=("chain", "draw")).transpose("sample", "beta_dim_0").values
 
+    return EmpiricalDistribution(beta_samples)
 
-    return JointEmpiricalDistribution(samples)
+def robust_linreg(
+    data: Mapping[str, Any],
+    prior_nu: Mapping[str, Any],
+    *,
+    num_samples: int = 2000,
+    sample_NUTS: bool = True,
+):
+    """
+    Posterior over nu in robust linear regression with StudentT likelihood:
+        y_i | nu ~ StudentT(nu, mu_i, sigma)
+        mu_i = x_i^T beta
+    where beta and sigma are FIXED constants provided in `data`.
+
+    Parameters
+    ----------
+    data : mapping with keys
+        - "X": (n, p) design matrix
+        - "Y": (n,) response vector
+        - "beta": (p,) fixed coefficients
+        - "sigma": float or (n,) fixed scale(s) for StudentT
+    prior_nu : mapping specifying the prior for nu (df > 0). One of:
+        - {"type": "exponential", "rate": λ}       # rate > 0
+        - {"type": "gamma", "alpha": a, "beta": b} # shape a>0, rate b>0
+
+    Returns
+    -------
+    EmpiricalDistribution
+        A 1D empirical posterior over nu.
+    """
+    X = np.asarray(data["X"])
+    Y = np.asarray(data["Y"])
+    beta = np.asarray(data["beta"])
+    sigma = np.asarray(data["sigma"])
+
+    if X.ndim != 2 or Y.ndim != 1 or beta.ndim != 1:
+        raise ValueError("Shapes must be: X (n,p), Y (n,), beta (p,)")
+
+    if X.shape[0] != Y.shape[0] or X.shape[1] != beta.shape[0]:
+        raise ValueError("Incompatible shapes between X, Y, and beta")
+
+    with pm.Model():
+        pm.MutableData("X", X)
+        pm.MutableData("Y", Y)
+        pm.MutableData("beta", beta)
+        pm.MutableData("sigma", sigma)
+
+        # Prior for nu (degrees of freedom > 0)
+        ptype = prior_nu.get("type", "").lower()
+        if ptype == "exponential":
+            rate = kde_as_exponential_rate(prior_nu)
+            if rate <= 0:
+                raise ValueError("Exponential prior requires rate > 0")
+            nu = pm.Exponential("nu", lam=rate)
+        elif ptype == "gamma":
+
+            alpha, beta_rate = kde_as_gamma_params(prior_nu)
+            if alpha <= 0 or beta_rate <= 0:
+                raise ValueError("Gamma prior requires alpha>0, beta>0")
+            nu = pm.Gamma("nu", alpha=alpha, beta=beta_rate)
+        else:
+            raise ValueError("prior_nu must be {'type':'exponential','rate':...} "
+                             "or {'type':'gamma','alpha':...,'beta':...}")
+
+        mu = pm.math.dot(pm.get_data("X"), pm.get_data("beta"))
+        pm.StudentT("Y_obs", nu=nu, mu=mu, sigma=pm.get_data("sigma"), observed=pm.get_data("Y"))
+
+        if sample_NUTS:
+            idata = pm.sample(
+                draws=num_samples,
+                tune=num_samples,
+                chains=2,
+                return_inferencedata=True,
+            )
+        else:
+            step = pm.Slice()  # works for positive support too
+            idata = pm.sample(
+                draws=num_samples,
+                tune=num_samples,
+                chains=2,
+                step=step,
+                return_inferencedata=True,
+            )
+
+    # Flatten chains into a single 1D array of nu samples
+    nu_samples = (
+        idata.posterior["nu"]
+        .stack(sample=("chain", "draw"))
+        .transpose("sample")
+        .values
+    )  # shape: (num_chains*(num_samples),)
+
+    return EmpiricalDistribution(nu_samples)
 
 
 
@@ -258,7 +313,7 @@ def plot_posterior_evolution(all_posteriors, param_name: str):
     uppers = []
 
     for posterior in all_posteriors:
-        samples = posterior.samples[param_name]  # shape: (n_samples,) or (n_samples, d)
+        samples = posterior.samples  # shape: (n_samples,) or (n_samples, d)
 
         # Handle scalar or vector
         if samples.ndim == 1:
